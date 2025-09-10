@@ -88,14 +88,13 @@ def create_app() -> FastAPI:
 
         start_time = time.perf_counter()
 
-        # If OpenAI client not configured
-        if client is None:
-            ai_text = "AI service not configured. A human agent will assist you."
-            escalate = True
-            latency = 0.0
-        else:
+        # Default fallback if OpenAI is not configured or fails
+        ai_text = "AI service is unavailable. A human agent will assist you."
+        escalate = True
+        latency = 0.0
+
+        if client is not None:
             try:
-                # Async call to OpenAI API
                 completion = await client.chat.completions.acreate(
                     model="gpt-4o",
                     messages=[
