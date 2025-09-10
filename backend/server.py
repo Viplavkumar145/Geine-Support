@@ -22,13 +22,13 @@ load_dotenv(ROOT_DIR / ".env")
 logging.basicConfig(level=logging.INFO)
 
 # --------------------------------------------------
-# Pydantic Model for chat requests
+# Pydantic model for chat request
 # --------------------------------------------------
 class ChatRequest(BaseModel):
     message: str
 
 # --------------------------------------------------
-# FastAPI App Initialization
+# FastAPI app creation
 # --------------------------------------------------
 def create_app() -> FastAPI:
     app = FastAPI()
@@ -43,7 +43,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Environment Vars
+    # Environment variables
     mongo_url = os.environ.get("MONGO_URL")
     db_name = os.environ.get("DB_NAME", "supportgenie")
     openai_api_key = os.environ.get("OPENAI_API_KEY")
@@ -68,9 +68,7 @@ def create_app() -> FastAPI:
     else:
         app.state.openai = OpenAI(api_key=openai_api_key)
 
-    # --------------------------------------------------
-    # Routes
-    # --------------------------------------------------
+    # ------------------- Routes -------------------
 
     @app.get("/")
     async def root():
@@ -88,11 +86,12 @@ def create_app() -> FastAPI:
 
         start_time = time.perf_counter()
 
-        # Default fallback if OpenAI is not configured or fails
+        # Default fallback response
         ai_text = "AI service is unavailable. A human agent will assist you."
         escalate = True
         latency = 0.0
 
+        # Call OpenAI if client exists
         if client is not None:
             try:
                 completion = await client.chat.completions.acreate(
@@ -135,7 +134,6 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     return app
-
 
 # --------------------------------------------------
 # Uvicorn Entrypoint
