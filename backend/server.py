@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from openai import OpenAI
+from pydantic import BaseModel
 
 # --------------------------------------------------
 # Load environment variables
@@ -19,6 +20,12 @@ load_dotenv(ROOT_DIR / ".env")
 # Setup logging
 # --------------------------------------------------
 logging.basicConfig(level=logging.INFO)
+
+# --------------------------------------------------
+# Pydantic Model for chat requests
+# --------------------------------------------------
+class ChatRequest(BaseModel):
+    message: str
 
 # --------------------------------------------------
 # FastAPI App Initialization
@@ -70,9 +77,8 @@ def create_app() -> FastAPI:
         return {"message": "🚀 SupportGenie backend is running!"}
 
     @app.post("/chat")
-    async def chat(request: Request, payload: dict):
-        """Handle chat requests from frontend"""
-        user_message = payload.get("message", "")
+    async def chat(request: Request, payload: ChatRequest):
+        user_message = payload.message.strip()
         if not user_message:
             raise HTTPException(status_code=400, detail="Message cannot be empty")
 
@@ -80,16 +86,17 @@ def create_app() -> FastAPI:
         db = request.app.state.db
         client = request.app.state.openai
 
-        start_time = time.time()
+        start_time = time.perf_counter()
 
-        # If no API key configured, fallback
+        # If OpenAI client not configured
         if client is None:
             ai_text = "AI service not configured. A human agent will assist you."
             escalate = True
             latency = 0.0
         else:
             try:
-                completion = client.chat.completions.create(
+                # Async call to OpenAI API
+                completion = await client.chat.completions.acreate(
                     model="gpt-4o",
                     messages=[
                         {"role": "system", "content": "You are SupportGenie AI assistant. Respond politely and helpfully."},
@@ -99,14 +106,14 @@ def create_app() -> FastAPI:
                 )
                 ai_text = completion.choices[0].message.content
                 escalate = False
-                latency = time.time() - start_time
+                latency = time.perf_counter() - start_time
             except Exception as e:
                 logging.error(f"❌ OpenAI API call failed: {str(e)}")
                 ai_text = "Our AI service is unavailable. A human agent will assist you."
                 escalate = True
                 latency = 0.0
 
-        # Save to Mongo
+        # Save chat to MongoDB if connected
         if db:
             try:
                 await db.chats.insert_one(
@@ -116,6 +123,7 @@ def create_app() -> FastAPI:
                         "ai_response": ai_text,
                         "escalate": escalate,
                         "latency": latency,
+                        "timestamp": time.time(),
                     }
                 )
             except Exception as e:
@@ -134,3 +142,7 @@ def create_app() -> FastAPI:
 # Uvicorn Entrypoint
 # --------------------------------------------------
 app = create_app()
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)
