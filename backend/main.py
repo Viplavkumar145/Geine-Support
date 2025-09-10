@@ -1,10 +1,11 @@
 import os
 import logging
+import httpx
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from emergent.sdk import LlmChat, UserMessage
 from motor.motor_asyncio import AsyncIOMotorClient
 import uuid
+import time
 
 # --------------------------------------------------
 # Setup logging
@@ -32,7 +33,8 @@ app.add_middleware(
 # --------------------------------------------------
 MONGO_URL = os.environ.get("MONGO_URL")
 DB_NAME = os.environ.get("DB_NAME", "supportgenie")
-EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY")
+# This is the key for the LLM service. Set it in your environment.
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 # --------------------------------------------------
 # MongoDB Connection (Safe Mode)
@@ -54,11 +56,12 @@ else:
 # Helper: AI Response with Safe Fallback
 # --------------------------------------------------
 async def get_ai_response(message: str, session_id: str):
-    api_key = EMERGENT_LLM_KEY
-
+    api_key = OPENAI_API_KEY
+    openai_api_url = "https://api.openai.com/v1/chat/completions"
+    
     # ✅ Fallback if no API key
     if not api_key:
-        logging.warning("⚠️ No EMERGENT_LLM_KEY found. Using fallback response.")
+        logging.warning("⚠️ No OPENAI_API_KEY found. Using fallback response.")
         return (
             "AI service is not configured. Let me connect you with a human agent.",
             True,
@@ -69,24 +72,40 @@ async def get_ai_response(message: str, session_id: str):
         "You are SupportGenie AI assistant. Respond politely and helpfully to customer queries."
     )
 
+    payload = {
+        "model": "gpt-4o",
+        "messages": [
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": message},
+        ],
+        "temperature": 0.7
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
+    }
+
+    start_time = time.time()
     try:
-        chat = (
-            LlmChat(
-                api_key=api_key,
-                session_id=f"supportgenie_{session_id}",
-                system_message=system_message,
-            )
-            .with_model("openai", "gpt-4o")
+        async with httpx.AsyncClient() as client:
+            response = await client.post(openai_api_url, json=payload, headers=headers, timeout=30.0)
+            response.raise_for_status() # Raise an exception for bad status codes
+            
+            response_json = response.json()
+            ai_text = response_json["choices"][0]["message"]["content"]
+            end_time = time.time()
+            latency = end_time - start_time
+
+            return ai_text, False, latency
+
+    except httpx.HTTPStatusError as e:
+        logging.error(f"❌ HTTP error during LLM call: {e}")
+        return (
+            f"An API error occurred: {e.response.text}. A human agent will assist you shortly.",
+            True,
+            0.0,
         )
-
-        user_message = UserMessage(text=message)
-        response = await chat.send_message(user_message)
-
-        if not response:
-            raise ValueError("Empty response from AI")
-
-        return response.text, False, response.latency if hasattr(response, "latency") else 0.0
-
     except Exception as e:
         logging.error(f"❌ LLM service failed: {str(e)}")
         return (
