@@ -114,7 +114,7 @@ def create_app() -> FastAPI:
                 latency = 0.0
 
         # Save chat to MongoDB if connected
-        if db:
+        if db is not None:
             try:
                 await db.chats.insert_one(
                     {
@@ -145,4 +145,4 @@ app = create_app()
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("server:app", host="127.0.0.1", port=8000, reload=True)
