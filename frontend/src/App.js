@@ -42,7 +42,7 @@ import {
   Heart
 } from "lucide-react";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
 const API = `${BACKEND_URL}/api`;
 
 function App() {
@@ -114,15 +114,18 @@ function App() {
         session_id: sessionId,
         brand_tone: brandTone
       }, {
-        timeout: 30000
+        timeout: 30000,
+        headers: {
+          'Content-Type': 'application/json'
+        }
       });
       
       const aiMessage = {
         id: Date.now().toString() + "_ai",
-        message: response.data.message,
+        message: response.data.response || response.data.message,
         sender: "ai",
         timestamp: new Date().toISOString(),
-        escalated: response.data.escalated
+        escalated: response.data.escalated || false
       };
       
       setMessages(prev => [...prev, aiMessage]);
@@ -136,6 +139,8 @@ function App() {
         errorMessage = "Our AI service is temporarily unavailable. Please try again in a moment.";
       } else if (error.code === 'ECONNABORTED') {
         errorMessage = "Request timed out. Please check your connection and try again.";
+      } else if (error.response?.data?.error) {
+        errorMessage = error.response.data.error;
       }
       
       showError("chat", errorMessage);
@@ -146,6 +151,7 @@ function App() {
         sender: "ai",
         timestamp: new Date().toISOString()
       };
+      
       setMessages(prev => [...prev, errorAiMessage]);
     } finally {
       setIsLoading(false);
@@ -606,7 +612,7 @@ function App() {
                                   className="bg-gradient-to-r from-teal-600 to-blue-600 hover:from-teal-700 hover:to-blue-700"
                                 >
                                   {isLoading ? (
-                                    <div className="loading-spinner"></div>
+                                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
                                   ) : (
                                     <Send className="w-4 h-4" />
                                   )}
@@ -733,7 +739,7 @@ function App() {
                         >
                           {isUploading ? (
                             <>
-                              <div className="loading-spinner mr-2"></div>
+                              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
                               Uploading...
                             </>
                           ) : (

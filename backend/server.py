@@ -5,28 +5,75 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional
 import uuid
 from datetime import datetime, timezone
 import asyncio
 import time
-import openai
+from openai import OpenAI
+try:
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+    genai = None
+import PyPDF2
+import io
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 # MongoDB connection with error handling
 try:
-    mongo_url = os.environ['MONGO_URL']
+    mongo_url = os.environ.get('MONGO_URL')
+    if not mongo_url:
+        logging.warning("MONGO_URL not configured - using default local MongoDB")
+        mongo_url = "mongodb://localhost:27017/supportgenie"
+    
     client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=5000)
-    db = client[os.environ['DB_NAME']]
+    db_name = os.environ.get('DB_NAME', 'supportgenie')
+    db = client[db_name]
+    logging.info(f"Connecting to MongoDB: {mongo_url}")
 except Exception as e:
-    logging.error(f"Failed to connect to MongoDB: {str(e)}")
-    raise
+    logging.warning(f"MongoDB connection configuration error: {str(e)}")
+    # Create a fallback configuration
+    client = None
+    db = None
 
-# OpenAI Configuration
-openai.api_key = os.environ.get('OPENAI_API_KEY')
+# AI Service Configuration - Support for both OpenAI and Gemini
+ai_provider = os.environ.get('AI_PROVIDER', 'demo').lower()
+openai_client = None
+gemini_model = None
+
+if ai_provider == 'openai':
+    openai_api_key = os.environ.get('OPENAI_API_KEY')
+    if openai_api_key and openai_api_key.startswith('sk-'):
+        try:
+            openai_client = OpenAI(api_key=openai_api_key)
+            logging.info("✓ OpenAI client initialized successfully")
+        except Exception as e:
+            logging.error(f"Failed to initialize OpenAI client: {e}")
+            openai_client = None
+    else:
+        logging.warning("OpenAI API key not configured or invalid")
+elif ai_provider == 'gemini':
+    gemini_api_key = os.environ.get('GEMINI_API_KEY')
+    if GEMINI_AVAILABLE and gemini_api_key and gemini_api_key != 'your_gemini_api_key_here':
+        try:
+            genai.configure(api_key=gemini_api_key)
+            gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+            logging.info("✓ Gemini client initialized successfully")
+        except Exception as e:
+            logging.error(f"Failed to initialize Gemini client: {e}")
+            gemini_model = None
+    else:
+        if not GEMINI_AVAILABLE:
+            logging.warning("Gemini package not available, installing...")
+        else:
+            logging.warning("Gemini API key not configured or invalid")
+else:
+    logging.info("Running in DEMO MODE - No AI service configured")
 
 # Create the main app without a prefix
 app = FastAPI(
@@ -43,7 +90,7 @@ class ChatMessage(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     session_id: str = Field(..., min_length=1, max_length=100)
     message: str = Field(..., min_length=1, max_length=2000)
-    sender: str = Field(..., regex="^(user|ai)$")
+    sender: str = Field(..., pattern="^(user|ai)$")
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     escalated: bool = False
     response_time: Optional[float] = None
@@ -51,9 +98,10 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000)
     session_id: str = Field(..., min_length=1, max_length=100)
-    brand_tone: str = Field(default="friendly", regex="^(friendly|formal|casual)$")
+    brand_tone: str = Field(default="friendly", pattern="^(friendly|formal|casual)$")
 
-    @validator('message')
+    @field_validator('message')
+    @classmethod
     def validate_message(cls, v):
         if not v.strip():
             raise ValueError('Message cannot be empty')
@@ -133,7 +181,7 @@ Remember: Your goal is to provide excellent customer support while maintaining t
     
     return base_message
 
-# Enhanced AI response function using OpenAI directly
+# Enhanced AI response function
 async def get_ai_response(message: str, session_id: str, brand_tone: str = "friendly") -> tuple[str, bool, float]:
     start_time = time.time()
     
@@ -145,49 +193,56 @@ async def get_ai_response(message: str, session_id: str, brand_tone: str = "frie
         if len(message) > 2000:
             return "Your message is quite long. Could you please break it down into smaller parts?", False, 0.0
         
+        # Check if AI client is configured
+        if ai_provider == 'openai' and not openai_client:
+            return "OpenAI service is not configured. Please contact administrator.", True, 0.0
+        elif ai_provider == 'gemini' and not gemini_model:
+            return "Gemini service is not configured. Please contact administrator.", True, 0.0
+        elif ai_provider not in ['openai', 'gemini']:
+            return "AI service is not configured. Please contact administrator.", True, 0.0
+        
         # Get knowledge base content with error handling
         try:
-            kb_documents = await db.knowledge_base.find().to_list(length=50)  # Limit for performance
-            knowledge_content = "\n\n".join([
-                f"Document: {doc.get('filename', 'Unknown')}\n{doc.get('content', '')}" 
-                for doc in kb_documents if doc.get('content')
-            ])
+            if db is not None:
+                kb_documents = await db.knowledge_base.find().to_list(length=50)
+                knowledge_content = "\n\n".join([
+                    f"Document: {doc.get('filename', 'Unknown')}\n{doc.get('content', '')}" 
+                    for doc in kb_documents if doc.get('content')
+                ])
+            else:
+                knowledge_content = ""
         except Exception as e:
             logging.warning(f"Failed to load knowledge base: {str(e)}")
             knowledge_content = ""
         
         system_message = get_system_message(brand_tone, knowledge_content)
         
-        # Check if OpenAI API key is configured
-        api_key = os.environ.get('OPENAI_API_KEY')
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY not configured")
-        
-        # Call OpenAI API
+        # Call AI API based on provider
         try:
-            response = openai.ChatCompletion.create(
-                model="gpt-4",  # You can change to gpt-3.5-turbo for lower costs
-                messages=[
-                    {"role": "system", "content": system_message},
-                    {"role": "user", "content": message}
-                ],
-                max_tokens=500,
-                temperature=0.7,
-                timeout=30
-            )
+            if ai_provider == 'openai' and openai_client:
+                response = openai_client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[
+                        {"role": "system", "content": system_message},
+                        {"role": "user", "content": message}
+                    ],
+                    max_tokens=500,
+                    temperature=0.7,
+                    timeout=30
+                )
+                ai_response = response.choices[0].message.content
+                
+            elif ai_provider == 'gemini' and gemini_model:
+                # Combine system message and user message for Gemini
+                full_prompt = f"{system_message}\n\nUser: {message}\nAssistant:"
+                response = gemini_model.generate_content(full_prompt)
+                ai_response = response.text
+                
+            else:
+                return "AI service is not properly configured. Let me connect you with a human agent.", True, 0.0
             
-            ai_response = response.choices[0].message.content
-            
-        except openai.error.RateLimitError:
-            return "I'm currently experiencing high demand. Please try again in a moment, or let me connect you with a human agent.", True, 0.0
-        except openai.error.InvalidRequestError as e:
-            logging.error(f"OpenAI Invalid request: {str(e)}")
-            return "I'm having trouble processing your request. Let me connect you with a human agent.", True, 0.0
-        except openai.error.AuthenticationError:
-            logging.error("OpenAI API key authentication failed")
-            return "I'm experiencing authentication issues. Let me connect you with a human agent.", True, 0.0
         except Exception as e:
-            logging.error(f"OpenAI API error: {str(e)}")
+            logging.error(f"AI API error ({ai_provider}): {str(e)}")
             return "I'm experiencing technical difficulties. Let me connect you with a human agent.", True, 0.0
         
         if not ai_response:
@@ -201,8 +256,8 @@ async def get_ai_response(message: str, session_id: str, brand_tone: str = "frie
                 "manager", "supervisor", "refund", "complaint", "cancel", 
                 "billing", "angry", "frustrated", "terrible", "worst"
             ]),
-            len(message.split()) > 100,  # Very long messages might need human attention
-            "?" in message and len(message.split("?")) > 3  # Multiple complex questions
+            len(message.split()) > 100,
+            "?" in message and len(message.split("?")) > 3
         ]
         
         if any(escalation_indicators):
@@ -224,6 +279,25 @@ async def get_ai_response(message: str, session_id: str, brand_tone: str = "frie
         logging.error(f"AI response error: {str(e)}")
         return "I'm experiencing technical difficulties right now. Let me connect you with a human agent who can assist you.", True, 0.0
 
+# PDF text extraction function
+def extract_pdf_text(file_content: bytes) -> str:
+    try:
+        pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_content))
+        text_content = ""
+        
+        for page in pdf_reader.pages:
+            text_content += page.extract_text() + "\n"
+        
+        return text_content.strip()
+    except Exception as e:
+        logging.error(f"PDF extraction error: {str(e)}")
+        return f"PDF file content (extraction failed: {str(e)})"
+
+# Root endpoint for basic functionality
+@api_router.get("/")
+async def root():
+    return {"message": "SupportGenie API is running!", "status": "healthy"}
+
 # Enhanced API Routes with comprehensive error handling
 @api_router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
@@ -237,7 +311,7 @@ async def chat(request: ChatRequest):
         if len(request.session_id) > 100:
             raise HTTPException(status_code=400, detail="Session ID too long")
         
-        # Save user message with additional metadata
+        # Save user message
         user_msg = ChatMessage(
             session_id=request.session_id,
             message=request.message,
@@ -246,10 +320,10 @@ async def chat(request: ChatRequest):
         )
         
         try:
-            await db.chat_messages.insert_one(user_msg.dict())
+            if db is not None:
+                await db.chat_messages.insert_one(user_msg.dict())
         except Exception as e:
             logging.error(f"Failed to save user message: {str(e)}")
-            # Continue processing even if save fails
         
         # Get AI response with timeout
         try:
@@ -272,7 +346,8 @@ async def chat(request: ChatRequest):
         )
         
         try:
-            await db.chat_messages.insert_one(ai_msg.dict())
+            if db is not None:
+                await db.chat_messages.insert_one(ai_msg.dict())
         except Exception as e:
             logging.error(f"Failed to save AI message: {str(e)}")
         
@@ -297,11 +372,22 @@ async def get_chat_history(session_id: str):
         if len(session_id) > 100:
             raise HTTPException(status_code=400, detail="Invalid session ID")
         
+        if db is None:
+            raise HTTPException(status_code=503, detail="Database service unavailable")
+            
         messages = await db.chat_messages.find(
             {"session_id": session_id}
-        ).sort("timestamp", 1).limit(100).to_list(length=None)
+        ).sort("timestamp", 1).limit(100).to_list(length=100)
         
-        return [ChatMessage(**msg) for msg in messages]
+        # Convert MongoDB documents to ChatMessage objects
+        result = []
+        for msg in messages:
+            msg["id"] = msg.get("id", str(msg["_id"]))
+            if "_id" in msg:
+                del msg["_id"]
+            result.append(ChatMessage(**msg))
+        
+        return result
         
     except HTTPException:
         raise
@@ -338,19 +424,21 @@ async def upload_knowledge_base(file: UploadFile = File(...)):
                 detail="Unsupported file type. Only TXT, CSV, and PDF files are allowed"
             )
         
-        # Content extraction (basic text for now)
+        # Content extraction
         try:
-            if file_extension in ['.txt', '.csv'] or file.content_type.startswith('text/'):
-                text_content = file_content.decode('utf-8')
+            if file_extension == '.pdf' or file.content_type == 'application/pdf':
+                text_content = extract_pdf_text(file_content)
             else:
-                # For PDF, we'll store as is for now (in production, use proper PDF extraction)
-                text_content = f"PDF file: {file.filename} (content extraction not implemented yet)"
+                text_content = file_content.decode('utf-8')
         except UnicodeDecodeError:
             raise HTTPException(status_code=400, detail="File encoding not supported. Please use UTF-8 encoded files")
         
         if len(text_content.strip()) == 0:
             raise HTTPException(status_code=400, detail="File appears to be empty or contains no readable text")
         
+        if db is None:
+            raise HTTPException(status_code=503, detail="Database service unavailable")
+            
         # Check for duplicate filenames
         existing = await db.knowledge_base.find_one({"filename": file.filename})
         if existing:
@@ -395,8 +483,20 @@ async def upload_knowledge_base(file: UploadFile = File(...)):
 @api_router.get("/knowledge-base", response_model=List[KnowledgeBase])
 async def get_knowledge_base():
     try:
-        kb_items = await db.knowledge_base.find().sort("uploaded_at", -1).limit(50).to_list(length=None)
-        return [KnowledgeBase(**item) for item in kb_items]
+        if db is None:
+            raise HTTPException(status_code=503, detail="Database service unavailable")
+            
+        kb_items = await db.knowledge_base.find().sort("uploaded_at", -1).limit(50).to_list(length=50)
+        
+        # Convert MongoDB documents to KnowledgeBase objects
+        result = []
+        for item in kb_items:
+            item["id"] = item.get("id", str(item["_id"]))
+            if "_id" in item:
+                del item["_id"]
+            result.append(KnowledgeBase(**item))
+            
+        return result
     except Exception as e:
         logging.error(f"Knowledge base retrieval error: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to retrieve knowledge base")
@@ -407,6 +507,10 @@ async def delete_knowledge_base_item(kb_id: str):
         if not kb_id.strip():
             raise HTTPException(status_code=400, detail="Invalid knowledge base ID")
         
+        if db is None:
+            raise HTTPException(status_code=503, detail="Database service unavailable")
+            
+        # Use the custom ID field instead of ObjectId
         result = await db.knowledge_base.delete_one({"id": kb_id})
         if result.deleted_count == 0:
             raise HTTPException(status_code=404, detail="Knowledge base item not found")
@@ -437,7 +541,6 @@ async def get_analytics():
             conversation_stats = await db.chat_messages.aggregate(pipeline).to_list(length=None)
         except Exception:
             # Fallback to simple counting if aggregation fails
-            total_messages = await db.chat_messages.count_documents({})
             conversation_stats = []
         
         total_conversations = len(conversation_stats) if conversation_stats else 0
@@ -456,14 +559,13 @@ async def get_analytics():
             ai_handled=max(0, ai_handled),
             escalated=max(0, escalated_conversations),
             avg_response_time=round(max(0.1, avg_response_time), 2),
-            satisfaction_score=4.6,  # This would come from feedback in production
+            satisfaction_score=4.6,
             time_saved_hours=round(max(0.0, time_saved), 1),
             last_updated=datetime.now(timezone.utc)
         )
         
     except Exception as e:
         logging.error(f"Analytics error: {str(e)}")
-        # Return default analytics instead of failing
         return Analytics()
 
 # Health check endpoint
@@ -471,11 +573,15 @@ async def get_analytics():
 async def health_check():
     try:
         # Test database connection
-        await db.admin.command('ismaster')
+        await db.command('ping')
         
-        # Test OpenAI API key
-        api_key = os.environ.get('OPENAI_API_KEY')
-        ai_status = "configured" if api_key else "not_configured"
+        # Check AI service status
+        if ai_provider == 'openai' and openai_client:
+            ai_status = "openai_configured"
+        elif ai_provider == 'gemini' and gemini_model:
+            ai_status = "gemini_configured"
+        else:
+            ai_status = "demo_mode"
         
         return {
             "status": "healthy",
@@ -533,17 +639,26 @@ async def startup_event():
     
     # Test database connection
     try:
-        await db.admin.command('ismaster')
+        await db.command('ping')
         logger.info("✓ Database connection established")
     except Exception as e:
         logger.error(f"✗ Database connection failed: {str(e)}")
     
-    # Check OpenAI API key
-    api_key = os.environ.get('OPENAI_API_KEY')
-    if api_key:
-        logger.info("✓ OpenAI service configured")
+    # Check AI service configuration
+    if ai_provider == 'openai':
+        api_key = os.environ.get('OPENAI_API_KEY')
+        if api_key and openai_client:
+            logger.info("✓ OpenAI service configured")
+        else:
+            logger.warning("✗ OpenAI service not configured (OPENAI_API_KEY missing)")
+    elif ai_provider == 'gemini':
+        api_key = os.environ.get('GEMINI_API_KEY')
+        if api_key and gemini_model:
+            logger.info("✓ Gemini service configured")
+        else:
+            logger.warning("✗ Gemini service not configured (GEMINI_API_KEY missing or package unavailable)")
     else:
-        logger.warning("✗ OpenAI service not configured (OPENAI_API_KEY missing)")
+        logger.info("ℹ Running in demo mode - no AI service configured")
     
     logger.info("SupportGenie API ready!")
 
