@@ -45,6 +45,12 @@ import {
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
 const API = `${BACKEND_URL}/api`;
 
+// Debug: Log the backend URL in development
+if (process.env.NODE_ENV === 'development') {
+  console.log('Backend URL:', BACKEND_URL);
+  console.log('API URL:', API);
+}
+
 function App() {
   // State management
   const [activeTab, setActiveTab] = useState("dashboard");
