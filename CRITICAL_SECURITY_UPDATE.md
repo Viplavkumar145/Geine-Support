@@ -12,12 +12,12 @@
 
 ### 📍 **Location 1: Documentation File**
 - **File:** `CORS_FIX.md` (now removed)
-- **Key:** `AIzaSyD6Woh8quth0dFw6l4RTdG9pFgTPhdtyro`
+- **Key:** `AIzaSy[REDACTED-33-CHARS]`
 - **Status:** ✅ Removed from repository
 
 ### 📍 **Location 2: Environment File**  
 - **File:** `backend/.env`
-- **Key:** `AIzaSyBwpLCtnNwZLk_JKkcr9UPyGHt6CYacv8s`
+- **Key:** `AIzaSy[REDACTED-33-CHARS]`
 - **Status:** ✅ Secured with placeholder
 
 ### 🕵️ **Git History Analysis**
@@ -32,8 +32,8 @@
 ### 1. 🔄 **Regenerate ALL API Keys**
 1. Go to [Google AI Studio](https://aistudio.google.com/app/apikey)
 2. **DELETE** both exposed keys:
-   - `AIzaSyD6Woh8quth0dFw6l4RTdG9pFgTPhdtyro`
-   - `AIzaSyBwpLCtnNwZLk_JKkcr9UPyGHt6CYacv8s`
+   - `AIzaSy[REDACTED-33-CHARS]`
+   - `AIzaSy[REDACTED-33-CHARS]`
 3. **CREATE** a completely new API key
 4. **RESTRICT** the new key with domain limitations
 
