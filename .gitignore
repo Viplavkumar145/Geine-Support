@@ -27,8 +27,8 @@ ENV/
 env.bak/
 venv.bak/
 
-# IDE
-.vscode/
+# IDE (allow .vscode with security settings)
+# .vscode/
 .idea/
 *.swp
 *.swo
