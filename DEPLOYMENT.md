@@ -1,5 +1,44 @@
 # Deployment Guide
 
+## 📊 **Live Application**
+- **Frontend**: https://geine-support.vercel.app/ ✅
+- **Backend**: https://geine-support-backend.onrender.com ✅
+- **Custom Domain**: geinesupport.com
+
+---
+
+## 🌐 **Frontend (Vercel)**
+- **Platform**: Vercel
+- **Framework**: React
+- **Environment**: `REACT_APP_BACKEND_URL=https://geine-support-backend.onrender.com`
+
+## 🔧 **Backend (Render)**
+- **Platform**: Render.com
+- **Runtime**: Python 3.11
+- **Environment Variables**:
+  ```env
+  GEMINI_API_KEY=your_api_key
+  AI_PROVIDER=gemini
+  ENV=production
+  MONGO_URL=your_mongodb_url
+  CORS_ORIGINS=https://geine-support.vercel.app,https://geinesupport.com
+  ```
+
+---
+
+## 🧪 **Testing**
+```bash
+# Health check
+curl https://geine-support-backend.onrender.com/api/health
+
+# Test chat API
+curl -X POST https://geine-support-backend.onrender.com/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Hello", "session_id": "test", "brand_tone": "friendly"}'
+```
+
+**🎉 Your AI Customer Support Platform is live!**
+
 ## 🌐 Deploying Geine-Support to Production
 
 This guide covers different deployment options for your Geine-Support application.
